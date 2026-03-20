@@ -1,0 +1,4 @@
+time="2026-03-20T12:03:45+09:00" level=info msg="Incoming Request" ip="::1" method=GET path=/api/posts
+time="2026-03-20T12:03:45+09:00" level=info msg="Incoming Request" ip="::1" method=GET path=/api/posts
+time="2026-03-20T12:03:56+09:00" level=info msg="Incoming Request" ip="::1" method=GET path=/api/posts
+time="2026-03-20T12:03:56+09:00" level=info msg="Incoming Request" ip="::1" method=GET path=/api/posts

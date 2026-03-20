@@ -1,14 +1,21 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
+
+	log "github.com/sirupsen/logrus"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/gin-gonic/gin"
 	_ "modernc.org/sqlite"
@@ -110,8 +117,41 @@ type SessionStore struct {
 	tokens map[string]User
 }
 
+// 로그 찍는 함수, 내용이 많아지면 gz로 만듦
+func initLogger() {
+	log.SetOutput(&lumberjack.Logger{
+		Filename:   "../../logs/api.log",
+		MaxSize:    1,  // 기본값 MB
+		MaxBackups: 5,  // 총 제작되는 gz 갯수
+		MaxAge:     30, // 며칠이 지난 오래된 로그를 자동으로 삭제
+		Compress:   true,
+	})
+}
+
+// 미들웨어
+func MyMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		fmt.Println("요청 검사 시작")
+		c.Next()
+		fmt.Println("요청 처리 완료")
+	}
+}
+
+// 로거
+func JSONLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		log.WithFields(log.Fields{
+			"ip":     c.ClientIP(),
+			"method": c.Request.Method,
+			"path":   c.Request.URL.Path,
+		}).Info("Incoming Request")
+		c.Next()
+	}
+}
+
 func main() {
-	store, err := openStore("./app.db", "./schema.sql", "./seed.sql")
+	initLogger()
+	store, err := openStore("../../app.db", "../../schema.sql", "../../seed.sql")
 	if err != nil {
 		panic(err)
 	}
@@ -123,6 +163,7 @@ func main() {
 	registerStaticRoutes(router)
 
 	auth := router.Group("/api/auth")
+	router.Use(JSONLogger())
 	{
 		auth.POST("/register", func(c *gin.Context) {
 			var request RegisterRequest
@@ -221,6 +262,7 @@ func main() {
 	}
 
 	protected := router.Group("/api")
+	protected.Use(JSONLogger())
 	{
 		protected.GET("/me", func(c *gin.Context) {
 			token := tokenFromRequest(c)
@@ -456,9 +498,21 @@ func main() {
 		})
 	}
 
-	if err := router.Run(":8080"); err != nil {
-		panic(err)
+	srv := &http.Server{
+		Addr:    ":8080",
+		Handler: router,
 	}
+	go func() {
+		srv.ListenAndServe()
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	fmt.Println("서버 종료 준비 중...")
+	srv.Shutdown(context.Background())
+	fmt.Println("서버 안전한 종료")
 }
 
 func openStore(databasePath, schemaFile, seedFile string) (*Store, error) {
@@ -559,9 +613,9 @@ func registerStaticRoutes(router *gin.Engine) {
 		}
 		c.Next()
 	})
-	router.Static("/static", "./static")
+	router.Static("/static", "../../static")
 	router.GET("/", func(c *gin.Context) {
-		c.File("./static/index.html")
+		c.File("../../static/index.html")
 	})
 }
 

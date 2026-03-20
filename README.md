@@ -89,7 +89,6 @@ go run ./cmd/server
 
 ### 작업한 내용의 특징에 대해서 작성해주세요
 ex)
-> main.go:30
-> xxx 한 것을 막기위해 xxx 를 적용해 방어
-
-> xxx 한 것을 고려해 구성함
+> main.go:463
+> 안전한 서버 종료
+>> import ("context" "os/signal" "syscall") 추가
