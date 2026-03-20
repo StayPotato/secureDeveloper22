@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -9,10 +8,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -120,7 +119,7 @@ type SessionStore struct {
 // 로그 찍는 함수, 내용이 많아지면 gz로 만듦
 func initLogger() {
 	log.SetOutput(&lumberjack.Logger{
-		Filename:   "../../logs/api.log",
+		Filename:   "./logs/api.log",
 		MaxSize:    1,  // 기본값 MB
 		MaxBackups: 5,  // 총 제작되는 gz 갯수
 		MaxAge:     30, // 며칠이 지난 오래된 로그를 자동으로 삭제
@@ -151,7 +150,7 @@ func JSONLogger() gin.HandlerFunc {
 
 func main() {
 	initLogger()
-	store, err := openStore("../../app.db", "../../schema.sql", "../../seed.sql")
+	store, err := openStore("./app.db", "./schema.sql", "./seed.sql")
 	if err != nil {
 		panic(err)
 	}
@@ -167,6 +166,7 @@ func main() {
 	{
 		auth.POST("/register", func(c *gin.Context) {
 			var request RegisterRequest
+
 			if err := c.ShouldBindJSON(&request); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"message": "invalid register request"})
 				return
@@ -182,6 +182,12 @@ func main() {
 					"phone":    request.Phone,
 				},
 			})
+
+			// 회원가입
+			if err := insertTestData(store, request.Username, request.Name, request.Email, request.Phone, request.Password); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
 		})
 
 		auth.POST("/login", func(c *gin.Context) {
@@ -196,7 +202,10 @@ func main() {
 				c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to load user"})
 				return
 			}
-			if !ok || user.Password != request.Password {
+
+			// pw 확인 절차 추가
+			ok2, err := Compare(user.Password, request.Password)
+			if !ok || !ok2 || err != nil {
 				c.JSON(http.StatusUnauthorized, gin.H{"message": "invalid credentials"})
 				return
 			}
@@ -369,6 +378,9 @@ func main() {
 				return
 			}
 
+			// 게시글 목록 조회
+			selectTestData2_posts(store)
+
 			c.JSON(http.StatusOK, PostListResponse{
 				Posts: []PostView{
 					{
@@ -400,6 +412,11 @@ func main() {
 			user, ok := sessions.lookup(token)
 			if !ok {
 				c.JSON(http.StatusUnauthorized, gin.H{"message": "invalid authorization token"})
+				return
+			}
+			// 게시글 추가
+			if err := insertPost(store, request.Title, request.Content, user.ID); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 				return
 			}
 
@@ -498,23 +515,29 @@ func main() {
 		})
 	}
 
-	srv := &http.Server{
-		Addr:    ":8080",
-		Handler: router,
+	// 안전한 서버 종료를 위한 구문들
+	// srv := &http.Server{
+	// 	Addr:    ":8080",
+	// 	Handler: router,
+	// }
+	// go func() {
+	// 	srv.ListenAndServe()
+	// }()
+
+	// quit := make(chan os.Signal, 1)
+	// signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	// <-quit
+
+	// fmt.Println("서버 종료 준비 중...")
+	// srv.Shutdown(context.Background())
+	// fmt.Println("서버 안전한 종료")
+
+	if err := router.Run(":8080"); err != nil {
+		panic(err)
 	}
-	go func() {
-		srv.ListenAndServe()
-	}()
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	fmt.Println("서버 종료 준비 중...")
-	srv.Shutdown(context.Background())
-	fmt.Println("서버 안전한 종료")
 }
 
+// openStore DB 컨트롤
 func openStore(databasePath, schemaFile, seedFile string) (*Store, error) {
 	db, err := sql.Open("sqlite", databasePath)
 	if err != nil {
@@ -524,6 +547,8 @@ func openStore(databasePath, schemaFile, seedFile string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 
 	store := &Store{db: db}
+
+	// 추가 실패.
 	if err := store.initialize(schemaFile, seedFile); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -534,6 +559,127 @@ func openStore(databasePath, schemaFile, seedFile string) (*Store, error) {
 
 func (s *Store) close() error {
 	return s.db.Close()
+}
+
+// 회원가입 추가
+func insertTestData(s *Store, _username, _name, _email, _phone, _password string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	query := `
+		INSERT INTO users VALUES(NULL,?,?,?,?,?, 0, 0)
+	`
+
+	// 중복 검사
+	//if find1 := selectTestData1_users(s, _username, _email, _phone); find1 != nil {
+	//	return fmt.Errorf("user already exists")
+	//}
+
+	// 패스워드 해싱
+	_password_hash, err := Generate(_password)
+	if err != nil {
+		return err
+	}
+
+	result, err := tx.Exec(query, _username, _name, _email, _phone, _password_hash)
+	if err != nil {
+		fmt.Println("DB 삽입 실패:", err)
+	} else {
+		rowsAffected, _ := result.RowsAffected()
+		fmt.Printf("DB 삽입 성공 %d\n", rowsAffected)
+	}
+
+	return tx.Commit()
+}
+
+// Generate는 평문의 패스워드에서 단방향 해시를 생성
+func Generate(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	fmt.Println(hash)
+	return string(hash), nil
+}
+
+// Compare는 단방향 해시와 평문 패스워드를 비교하여 에러를 반환한다
+func Compare(hash, password string) (bool, error) {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	if err != nil {
+		if err == bcrypt.ErrMismatchedHashAndPassword {
+			return false, err
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// 탐색 1
+func selectTestData1_users(s *Store, _username, _email, _phone string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if row := tx.QueryRow("SELECT id FROM users WHERE username = (?)", _username); row != nil {
+		fmt.Println("DB 탐색 실패:")
+		return err
+	} else if row := tx.QueryRow("SELECT id FROM users WHERE email = (?)", _email); row != nil {
+		fmt.Println("DB 탐색 실패:")
+		return err
+	} else if row := tx.QueryRow("SELECT id FROM users WHERE phone = (?)", _phone); row != nil {
+		fmt.Println("DB 탐색 실패:")
+		return err
+	}
+
+	fmt.Println("DB 탐색 성공")
+	return nil
+}
+
+// 탐색 2
+func selectTestData2_posts(s *Store) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query("SELECT * FROM posts")
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+
+	}
+
+	fmt.Println("DB 탐색 성공")
+	return tx.Commit()
+}
+
+// 게시글 추가
+func insertPost(s *Store, _title, _content string, _uid uint) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	query := `
+		INSERT INTO posts VALUES(NULL, ?, ?, ?, ?, ?)
+	`
+	result, err := tx.Exec(query, _title, _content, _uid, time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339))
+	if err != nil {
+		fmt.Println("DB 삽입 실패:", err)
+	} else {
+		rowsAffected, _ := result.RowsAffected()
+		fmt.Printf("DB 삽입 성공 %d\n", rowsAffected)
+	}
+
+	return tx.Commit()
 }
 
 func (s *Store) initialize(schemaFile, seedFile string) error {
@@ -613,9 +759,9 @@ func registerStaticRoutes(router *gin.Engine) {
 		}
 		c.Next()
 	})
-	router.Static("/static", "../../static")
+	router.Static("/static", "./static")
 	router.GET("/", func(c *gin.Context) {
-		c.File("../../static/index.html")
+		c.File("./static/index.html")
 	})
 }
 

@@ -88,7 +88,19 @@ go run ./cmd/server
 처음 상태로 다시 시작하고 싶으면 `app.db`를 지운 뒤 다시 실행하면 됩니다.
 
 ### 작업한 내용의 특징에 대해서 작성해주세요
-ex)
-> main.go:463
-> 안전한 서버 종료
->> import ("context" "os/signal" "syscall") 추가
+> main.go:130
+>> 미들웨어, 로거 추가
+>main.go:463
+>> 안전한 서버 종료
+> main.go:562
+>> 회원가입 추가
+>> sqli 방지를 위한 바인딩 
+> main.go:596
+>> 단방향 해시 추가
+> main.go:606
+>> 해시 검증 함수 추가
+> main.go:618ㅁ
+>> username, phone, email에 대한 중복검사 루틴 추가
+>> 작동에 오류가 있어 주석처리함
+> main.go:635
+>> 게시글 작성 기능 추가
